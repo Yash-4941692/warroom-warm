@@ -1,17 +1,45 @@
 name: warm-ping
 on:
-  schedule:
-    - cron: "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
   workflow_dispatch:
+  schedule:
+    - cron: "2,12,22,32,42,52 * * * *"   # backup kick-starters (in case a chain ever dies)
 jobs:
   ping:
     runs-on: ubuntu-latest
+    timeout-minutes: 345
     steps:
-      - run: |
-          for i in 1 2 3; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "https://jee-war-room-three.vercel.app/healthz?detail=1")
-            echo "attempt $i -> HTTP $code"
-            [ "$code" = "200" ] && exit 0
-            sleep 10
+      - name: warm-daemon
+        env:
+          WARM_TOKEN: ${{ secrets.WARM_TOKEN }}
+          SELF: ${{ github.run_id }}
+        run: |
+          set -u
+          API=https://api.github.com/repos/Yash-4941692/warroom-warm
+          URL=https://jee-war-room-three.vercel.app/healthz?detail=1
+          do_ping(){
+            for t in 1 2 3; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$URL" || true)
+              echo "$(date -u +%H:%M:%S) ping -> HTTP ${code:-000}"
+              [ "$code" = "200" ] && return 0
+              sleep 15
+            done
+          }
+          # Only one daemon at a time: wait until any older daemon has finished.
+          for w in $(seq 1 26); do
+            do_ping
+            others=$(curl -s -H "Authorization: token $WARM_TOKEN" "$API/actions/runs?status=in_progress" \
+              | python3 -c "import sys,os,json;print(sum(1 for r in json.load(sys.stdin)['workflow_runs'] if r['name']=='warm-ping' and str(r['id'])!=os.environ['SELF']))")
+            echo "other daemons running: $others"
+            [ "$others" = "0" ] && break
+            sleep 55
           done
-          exit 1
+          # Primary daemon: ping every 5 minutes for ~5h, then hand off a fresh run.
+          for i in $(seq 1 60); do
+            if [ "$i" -ge 57 ]; then
+              curl -s -o /dev/null -X POST -H "Authorization: token $WARM_TOKEN" \
+                "$API/actions/workflows/ping.yml/dispatches" -d '{"ref":"main"}' \
+                -w "handoff dispatch -> HTTP %{http_code}\n"
+            fi
+            do_ping
+            sleep 300
+          done
