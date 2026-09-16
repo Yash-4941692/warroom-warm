@@ -6,7 +6,7 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 345
+    timeout-minutes: 320
     steps:
       - name: warm-daemon
         env:
@@ -24,22 +24,31 @@ jobs:
               sleep 15
             done
           }
-          # Only one daemon at a time: wait until any older daemon has finished.
-          for w in $(seq 1 26); do
+          others(){
+            curl -s -H "Authorization: token $WARM_TOKEN" "$API/actions/runs?status=in_progress" \
+              | python3 -c "import sys,os,json;print(sum(1 for r in json.load(sys.stdin)['workflow_runs'] if r['name']=='warm-ping' and str(r['id'])!=os.environ['SELF']))"
+          }
+          # Wait for any older daemon to finish (handoff overlap is ~2 min).
+          for w in $(seq 1 8); do
             do_ping
-            others=$(curl -s -H "Authorization: token $WARM_TOKEN" "$API/actions/runs?status=in_progress" \
-              | python3 -c "import sys,os,json;print(sum(1 for r in json.load(sys.stdin)['workflow_runs'] if r['name']=='warm-ping' and str(r['id'])!=os.environ['SELF']))")
-            echo "other daemons running: $others"
-            [ "$others" = "0" ] && break
-            sleep 55
+            n=$(others); echo "other daemons running: $n"
+            [ "$n" = "0" ] && break
+            [ "$w" = "8" ] && { echo "another daemon is active; exiting as duplicate"; exit 0; }
+            sleep 45
           done
-          # Primary daemon: ping every 5 minutes for ~5h, then hand off a fresh run.
-          for i in $(seq 1 60); do
-            if [ "$i" -ge 57 ]; then
+          # Prove the token + dispatch work from inside the runner (spawns a duplicate that exits).
+          curl -s -o /dev/null -X POST -H "Authorization: token $WARM_TOKEN" \
+            "$API/actions/workflows/ping.yml/dispatches" -d '{"ref":"main"}' \
+            -w "startup self-check dispatch -> HTTP %{http_code}\n"
+          # Primary daemon: ping every 5 minutes for ~4h40m, then hand off and exit.
+          for i in $(seq 1 56); do
+            do_ping
+            if [ "$i" -eq 56 ]; then
               curl -s -o /dev/null -X POST -H "Authorization: token $WARM_TOKEN" \
                 "$API/actions/workflows/ping.yml/dispatches" -d '{"ref":"main"}' \
                 -w "handoff dispatch -> HTTP %{http_code}\n"
+              echo "handoff complete; exiting"
+              exit 0
             fi
-            do_ping
             sleep 300
           done
