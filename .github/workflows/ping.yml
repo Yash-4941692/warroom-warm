@@ -40,8 +40,8 @@ jobs:
           curl -s -o /dev/null -X POST -H "Authorization: token $WARM_TOKEN" \
             "$API/actions/workflows/ping.yml/dispatches" -d '{"ref":"main"}' \
             -w "startup self-check dispatch -> HTTP %{http_code}\n"
-          # Primary daemon: ping every 5 minutes for ~4h40m, then hand off and exit.
-          for i in $(seq 1 56); do
+          # Primary daemon: ping every 4 minutes for ~4h40m, then hand off and exit.
+          for i in $(seq 1 70); do
             do_ping
             if [ "$i" -eq 56 ]; then
               curl -s -o /dev/null -X POST -H "Authorization: token $WARM_TOKEN" \
@@ -50,5 +50,5 @@ jobs:
               echo "handoff complete; exiting"
               exit 0
             fi
-            sleep 300
+            sleep 240
           done
